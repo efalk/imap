@@ -16,7 +16,7 @@ Usage:  imap [options] command [arguments]
 	-p port		(default is 143 or 993)
 	-s		ssl/tls
 	-a authtype	'plain' or 'md5'
-	-d dir		local mail directory, fetch and put
+	-d dir		local mail directory; fetch and put commands
 	-D		delete remote mailboxes before writing
 	-f		force; upload mail to non-empty mailboxes
 	-P pfx		mailbox prefix; used with upload command
@@ -41,6 +41,21 @@ Usage:  imap [options] command [arguments]
 	download [mailboxes]	Download emails; -d option required
 	upload mailboxes	Upload emails; -d option required
 
+    examples:
+      See what mailboxes are on your account:
+	imap.py -u user@mail.example.com:993 describe
+
+      List messages in a mailbox:
+	imap.py -u user@mail.example.com:993 list vacation
+
+      Download messages from a mailbox:
+	imap.py -u user@mail.example.com:993 -d ./LocalMail download vacation
+
+      Download messages from all mailboxes:
+	imap.py -u user@mail.example.com:993 -d ./LocalMail download
+
+      Upload mailbox
+	imap.py -u user@mail.example.com:993 -d ./LocalMail upload vacation
 
 Exit codes:
 
