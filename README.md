@@ -40,7 +40,10 @@ Typical usage:
 
 ### See what mailboxes are on your account
 
-    $ ./imap.py -u user@mail.example.com:993 describe
+(Note that the user's login in this example is `user@example.com` and the host is
+`mail.example.com`, so the `-u` argument is `user@example.com@mail.example.com`.)
+
+    $ ./imap.py -s -u user@example.com@mail.example.com listboxes
     Password:
     Deleted Messages
     Drafts
@@ -70,12 +73,12 @@ Typical usage:
 ### Download specific mailboxes
 
     $ mkdir LocalMail
-    $ ./imap.py -d ./LocalMail -u user@mail.example.com:993 download games Jokes House House/Plumbing
+    $ ./imap.py -d ./LocalMail -u user@mail.example.com:993 download games Jokes House House.Plumbing
     Password: 
     games: 3 messages
     Jokes: 6 messages
     House: 25 messages
-    House/Plumbing: 2 messages
+    House.Plumbing: 2 messages
 
 ### Download all mailboxes
 
@@ -89,3 +92,18 @@ Typical usage:
     $ ./imap.py -d ./LocalMail -u user@mail.newhost.com:993 upload games jokes
     Password: 
     ...
+
+### A note of caution where mailbox names are concerned
+
+IMAP doesn't really have a concept of directory structure (although some servers may
+include this as an extension). It's very common to use '.' as a seperator, e.g. "House" and
+"House.Plumbing" as mailbox names. Many email clients recognize this convention and
+convert to e.g. "House" and "House/Plumbing" on the local system.
+
+This tool does not do this conversion, but you should be aware that some email clients, such
+as Thunderbird, do.
+
+For this reason, it's probably best to avoid mailbox names such as "Dr.Who" or "sci/fi" as
+these can cause issues when moving email between remote IMAP servers and your local system.
+For example, on Unix systems, it's impossible for the files "House" and "House/Plumbing" to
+both exist.
