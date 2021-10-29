@@ -25,25 +25,31 @@ Usage:  imap [options] command [arguments]
 	-x pat		exclude mailboxes matching pattern
 	-I file		file contains a list of mailbox patterns, 1 per line
 	-X file		file contains a list of patterns to exclude
+	--pw paswd	password on command line (not recommended)
 
 	--help		this list
 
 	username may be expressed as name[@host[:port]]. The -h and -p
-	options override host and port
+	options override host and port. If the username has an '@' in it, you
+	could use e.g. "-u user@example.com@mail.example.com" or
+	"-u user@example.com -h mail.example.com"
 
 	patterns are shell-style glob patterns
 
     commands:
 
 	probe <user@host>	Guess imap server
-	describe 		Describe user mailboxes
-	list [mailboxes]	List messages in given mailbox(es)
-	download [mailboxes]	Download emails; -d option required
+	listboxes		List user mailboxes
+	list [mailboxes]	List messages in given mailbox(es); default is INBOX
+	download [mailboxes]	Download emails; -d option required; default is all mailboxes
 	upload mailboxes	Upload emails; -d option required
 
     examples:
+      Figure out where your imap server is:
+	imap.py -v probe user@example.com
+
       See what mailboxes are on your account:
-	imap.py -u user@mail.example.com:993 describe
+	imap.py -u user@mail.example.com:993 listboxes
 
       List messages in a mailbox:
 	imap.py -u user@mail.example.com:993 list vacation
@@ -80,7 +86,6 @@ import email.parser
 import getpass
 import re
 import types
-import pprint
 import fnmatch
 import ast
 
@@ -119,6 +124,8 @@ includes = []
 excludes = []
 
 class Mbox(object):
+  """This object represents one mailbox. Its constructor accepts
+  one server response line from the 'list' command."""
   def __init__(self):
     self.flags = 0
     self.flaglist = []
@@ -209,7 +216,7 @@ def main():
 
   try:
     (optlist, args) = getopt.gnu_getopt(sys.argv[1:],
-    	'vqlnh:p:sa:u:t:w:d:DP:x:I:X:', ['help'])
+	'vqlnfh:p:sa:u:t:w:d:DP:x:I:X:', ['help','pw='])
     for flag, value in optlist:
       if flag == '-v': verbose += 1
       elif flag == '-q': quiet = True
@@ -219,7 +226,7 @@ def main():
       elif flag == '-p': port = int(value)
       elif flag == '-s': ssltls = True
       elif flag == '-a': authtype = value
-      elif flag == '-u': user,host,port = parseEmail(value, user,host,port)
+      elif flag == '-u': user = value
       elif flag == '-t': timeout = float(value)
       elif flag == '-w': waitTime = float(value)
       elif flag == '-d': mailDir = value
@@ -232,23 +239,28 @@ def main():
       elif flag == '--help':
 	print usage
 	return 0
+      elif flag == '--pw': passwd = value
     if not args:
       print >>sys.stderr, 'Missing command'
       print >>sys.stderr, usage
       return 2
-  except getopt.GetoptError, e:
+  except getopt.GetoptError as e:
     print >>sys.stderr, e
     print >>sys.stderr, "--help for more info"
     return 2
-  except ValueError, e:
+  except ValueError as e:
     print >>sys.stderr, e
     print >>sys.stderr, "--help for more info"
     return 2
 
+  # If host was not specified, try to parse it from user
+  if user and not host:
+    user,host,port = parseEmail(user, user,host,port)
+
   if args[0] == 'probe':
     return doProbe(args)
-  elif args[0] == 'describe':
-    return doDescribe(args)
+  elif args[0] == 'listboxes':
+    return doListBoxes(args)
   elif args[0] == 'list':
     return doList(args)
   elif args[0] == 'download':
@@ -336,7 +348,7 @@ def doProbe(args):
   return 0
 
 
-def doDescribe(args):
+def doListBoxes(args):
   global host, port, ssltls, authtype, user, passwd, timeout, waitTime
   global verbose, longform
 
@@ -410,30 +422,41 @@ def doList(args):
   if not args: args = ['INBOX']
   for name in includes + args:
     for mbox in matchBoxes(name, mailboxes, excludes):
-      if verbose:
-	print 'Fetch message list from %s, this may take a while ...' % mbox
-      resp = srvr.select(mbox, True)
-      if resp[0] == 'OK':
-	nmesg = int(resp[1][0])
-	print
-	print '%s: %s messages' % (mbox, nmesg)
-	try:
-	  resp = srvr.fetch('1:*', "(UID RFC822.HEADER)")
-	  messages = parseFetch(resp)
-	  for msg in messages:
-	    headers = email.message_from_string(msg['RFC822.HEADER'])
-	    if longform:
-	      print '\nMessage %s:' % msg['UID']
-	      print headers
-	    else:
-	      print '%8s  %-40.40s  %-40.40s  %-40.40s' % \
-		(msg['UID'], headers['subject'],
-		 headers['from'], headers['date'])
-	except imaplib.IMAP4.error, e:
-	  print >>sys.stderr, 'Failed to fetch messages from %s: %s' % \
-	    (mbox, e)
+      messages = getMailboxHeaders(srvr, mbox, True)
+      if messages:
+	for msg in messages:
+	  headers = email.message_from_string(msg['RFC822.HEADER'])
+	  if longform:
+	    print '\nMessage %s:' % msg['UID']
+	    print headers
+	  else:
+	    print '%8s  %-40.40s  %-40.40s  %-40.40s' % \
+	      (msg['UID'], headers['subject'],
+	       headers['from'], headers['date'])
 
   return 0
+
+def getMailboxHeaders(srvr, mbox, listInfo):
+  '''Fetch all the RFC822 headers from the named mailbox.'''
+  global verbose, longform, waitTime
+  if verbose:
+    print 'Fetch message list from %s, this may take a while ...' % mbox
+  resp = srvr.select(mbox, True)
+  if resp[0] == 'OK':
+    nmesg = int(resp[1][0])
+    if listInfo:
+      print
+      print '%s: %s messages' % (mbox, nmesg)
+    if nmesg == 0:
+      return None
+    else:
+      try:
+	resp = srvr.fetch('1:*', "(UID RFC822.HEADER)")
+	return parseFetch(resp)
+      except imaplib.IMAP4.error as e:
+	print >>sys.stderr, 'Failed to fetch messages from %s: %s' % \
+	  (mbox, e)
+	return None
 
 
 def doDownload(args):
@@ -474,8 +497,10 @@ def doDownload(args):
     print >>sys.stderr, "Unable to read mailbox list from server"
     return 5
 
-  if not args: args = ['INBOX']
+  if not args: args = map(lambda m: m.name, mailboxes)
+  # For all names on command line:
   for name in includes + args:
+    # For all matching mboxes:
     for mbox in matchBoxes(name, mailboxes, excludes):
       mboxDir = os.path.join(mailDir, mbox.name)
       if not os.path.isdir(mboxDir):
@@ -505,7 +530,7 @@ def doDownload(args):
 		      pct0 = pct
 		      t0 = t
 		print
-	  except imaplib.IMAP4.error, e:
+	  except imaplib.IMAP4.error as e:
 	    print >>sys.stderr, 'Failed to fetch messages from %s: %s' % \
 	      (mbox, e)
 
@@ -529,10 +554,10 @@ def downloadOne(srvr, mbox, msgno, mboxDir, metadata):
       resp = srvr.fetch(msgno, "(FLAGS RFC822)")
       messages = parseFetch(resp)
       msg2 = messages[0]
-      #parser = email.parser.Parser()
-      #emailMsg = parser.parsestr(msg2['RFC822'], True)
-      print >>metadata, '%d	%d	%s' % \
-	(msgno, msg['UID'], msg2['FLAGS'])
+      parser = email.parser.Parser()
+      headers = parser.parsestr(msg2['RFC822'], True)
+      print >>metadata, '%d	%d	%s	%s' % \
+	(msgno, msg['UID'], headers['Message-Id'], msg2['FLAGS'])
       with open(msgFilename, "w") as ofile:
 	ofile.write(msg2['RFC822'])
 
@@ -601,31 +626,56 @@ def doUpload(args):
     return 5
 
   for name in dirList:
-    mboxname = prefix + name
-    if deleteFirst:
-      if verbose >= 2:
-	print 'Delete mailbox', mboxname
-      if not notreally:
-	srvr.delete(mboxname)
+    uploadMbox(srvr, name)
+
+  return 0
+
+def uploadMbox(srvr, name):
+  '''Upload a single mailbox.'''
+  global host, port, ssltls, authtype, user, passwd, timeout
+  global verbose, longform, waitTime, mailDir, prefix, notreally
+  global deleteFirst, force
+  global includes, excludes
+  mboxname = prefix + name
+  if deleteFirst:
     if verbose:
-      print 'Upload mailbox', mboxname
+      print 'Delete mailbox', mboxname
     if not notreally:
-      srvr.create(mboxname)
-    resp = srvr.select(mboxname, notreally)
-    if resp[0] == 'OK':
-      nmesg = int(resp[1][0])
-      if verbose >= 2:
-	print 'Mailbox %s opened, %d messages' % (mboxname, nmesg)
-      if nmesg > 0 and not force:
-	print >>sys.stderr, \
-	  "Mailbox %s is not empty, not uploading any messages" % \
-	  mboxname
+      srvr.delete(mboxname)
+  if verbose:
+    print 'Upload mailbox', mboxname
+  if not notreally:
+    srvr.create(mboxname)
+  resp = srvr.select(mboxname, notreally)
+  if resp[0] == 'OK':
+    nmesg = int(resp[1][0])
+    if verbose >= 2:
+      print 'Mailbox %s opened, %d messages' % (mboxname, nmesg)
+    if nmesg > 0 and not force:
+      print >>sys.stderr, \
+	"Mailbox %s is not empty, not uploading any messages" % \
+	mboxname
+    else:
+      # Get list of messages in the mail directory from metadata.
+      messages = readMetadata(os.path.join(mailDir, name, 'metadata'))
+      nmesg = len(messages)
+      # Get list of messages already on the server
+      srvrMessages = getMailboxHeaders(srvr, mboxname, verbose > 0)
+      if srvrMessages:
+	headers = email.message_from_string(srvrMessages[0]['RFC822.HEADER'])
+	parser = email.parser.Parser()
+	msgIds = set(getMessageId(msg, parser) for msg in srvrMessages)
+	srvrMessages = None
       else:
-	messages = readMetadata(os.path.join(mailDir, name, 'metadata'))
-	nmesg = len(messages)
-	pct0 = 0
-	t0 = time.time()
-	for idx,msg in enumerate(messages):
+	msgIds = set()
+      pct0 = 0
+      t0 = time.time()
+      for idx,msg in enumerate(messages):
+	if msg['msgid'] in msgIds:
+	  if verbose >= 2:
+	    print 'Not uploading message %d, %s, already on server.' % \
+	      (msg['UID'], msg['msgid'])
+	else:
 	  uploadOne(srvr, name, mboxname, msg)
 	  if verbose == 1:
 	    pct = (idx+1) * 100 // nmesg
@@ -635,11 +685,14 @@ def doUpload(args):
 	      sys.stdout.flush()
 	      pct0 = pct
 	      t0 = t
-	if verbose == 1:
-	  print
+      if verbose == 1:
+	print
 
-  return 0
-
+def getMessageId(msg, parser):
+  '''Return message id, or make one up.'''
+  headers = parser.parsestr(msg['RFC822.HEADER'])
+  if 'Message-Id' in headers: return headers['Message-Id']
+  return '<UID-%d>' % msg['UID']
 
 def uploadOne(srvr, name, mboxname, msg):
   '''Upload one message to the server.'''
@@ -649,12 +702,18 @@ def uploadOne(srvr, name, mboxname, msg):
   msgFileName = os.path.join(mailDir, name, 'u%d' % msg['UID'])
   with open(msgFileName, "r") as msgFile:
     msgData = msgFile.read()
-  flags = ' '.join(msg["FLAGS"])
+  flags = msg["FLAGS"]
+  # \Recent is not allowed in flags, apparently.
+  flags = filter(lambda x:x != '\\Recent', flags)
+  flags = ' '.join(flags)
   if verbose >= 2:
     print 'Uploading message %d, %d bytes to %s' % \
       (msg['UID'], len(msgData), mboxname)
   if not notreally:
-    srvr.append(mboxname, flags, None, msgData)
+    try:
+      srvr.append(mboxname, flags, None, msgData)
+    except imaplib.IMAP4.error as e:
+      print >>sys.stderr, "Failed to write message %d," % msg['UID'], e
 
 
 
@@ -666,7 +725,7 @@ def mboxNameCompare(a,b):
 
 
 def readMetadata(filename):
-  '''Read a metadata file for message numbers, uids, and flags. Return
+  '''Read a metadata file for message numbers, uids, msgids, and flags. Return
   a list of Mbox objects.'''
   # Return list of messages. Remove dupes.
   with open(filename, "r") as ifile:
@@ -675,14 +734,15 @@ def readMetadata(filename):
       if line.startswith('#'): continue
       line = line.strip()
       try:
-	msgno, uid, flags = line.split('\t')
+	msgno, uid, msgid, flags = line.split('\t')
 	uid = int(uid)
 	msg = {}
 	msg['msgno'] = int(msgno)
 	msg['UID'] = uid
+	msg['msgid'] = msgid
 	msg['FLAGS'] = ast.literal_eval(flags)
 	messages[uid] = msg
-      except ValueError, e:
+      except ValueError as e:
 	print >>sys.stderr, 'Failed to unpack %s, line:' % filename, line
   keys = messages.keys()
   keys.sort()
@@ -713,7 +773,7 @@ def srvConnect(host, port, ssltls):
     else:
       srvr = imaplib.IMAP4(host, port)
     return srvr
-  except socket.error, e:
+  except socket.error as e:
     print 'failed to connect to', host
     print e
     return None
@@ -740,7 +800,7 @@ def srvLogin(srvr, user, passwd):
     else:
       print >>sys.stderr, "Authtype %s not known" % authtype
       return False
-  except imaplib.IMAP4.error, e:
+  except imaplib.IMAP4.error as e:
     print >>sys.stderr, "Login failed:", e
     return False
 
@@ -764,7 +824,9 @@ def parseEmail(email, u=None, h=None, p=None):
   if '@' not in email:
     u = email
   else:
-    u,h = email.split('@')
+    parts = email.split('@')
+    u = '@'.join(parts[:-1])
+    h = parts[-1]
     if ':' in h:
       h,p = h.split(':')
       p = int(p)
@@ -963,6 +1025,6 @@ if __name__ == '__main__':
   signal.signal(signal.SIGPIPE, signal.SIG_DFL)
   try:
     sys.exit(main())
-  except KeyboardInterrupt, e:
+  except KeyboardInterrupt as e:
     print
     sys.exit(1)
